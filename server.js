@@ -60,7 +60,10 @@ app.get('/', (req, res) => {
     return res.json({ ok: true, message: 'Portfolio CMS API is running.' });
 });
 
-app.use('/uploads', express.static(UPLOADS_DIR));
+const uploadsStaticDirs = Array.from(new Set([UPLOADS_DIR, DEFAULT_UPLOADS_DIR, FALLBACK_UPLOADS_DIR].filter(Boolean)));
+uploadsStaticDirs.forEach((dir) => {
+    app.use('/uploads', express.static(dir));
+});
 
 function isNonEmptyString(value) {
     return typeof value === 'string' && value.trim().length > 0;
@@ -453,6 +456,9 @@ app.put('/api/projects/:id', isAuthenticated, uploadImage.single('image'), (req,
         if (db.projects[index] && Object.prototype.hasOwnProperty.call(db.projects[index], 'liveLink')) {
             delete db.projects[index].liveLink;
         }
+        if (req.body && (req.body.removeImage === 'true' || req.body.removeImage === true)) {
+            db.projects[index].image = '/uploads/project-default.jpg';
+        }
         if (req.file) {
             db.projects[index].image = '/uploads/' + req.file.filename;
         }
@@ -561,6 +567,9 @@ app.put('/api/blogs/:id', isAuthenticated, uploadImage.single('image'), (req, re
             date: req.body.date,
             tags: parseJsonArray(req.body.tags)
         };
+        if (req.body && (req.body.removeImage === 'true' || req.body.removeImage === true)) {
+            db.blogs[index].image = '/uploads/blog-default.jpg';
+        }
         if (req.file) {
             db.blogs[index].image = '/uploads/' + req.file.filename;
         }
