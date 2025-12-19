@@ -1,0 +1,61 @@
+{
+  "profile": {
+    "name": "Sai Praneetha",
+    "role": "Web developer",
+    "image": "/uploads/1766066818667-WhatsApp Image 2025-08-25 at 00.25.37.jpeg",
+    "resume": "/uploads/1766115359604-Resume-of-Praneetha.pdf",
+    "bio": "Passionate software developer with a love for creating elegant solutions to complex problems. I specialize in web development and have a keen eye for design.",
+    "email": "praneetha1506@gmail.com",
+    "phone": "8885601502",
+    "location": "Kurnool,India",
+    "github": "",
+    "linkedin": ""
+  },
+  "skills": [
+    {
+      "id": "1",
+      "name": "JavaScript",
+      "level": 90,
+      "category": "Frontend"
+    },
+    {
+      "id": "2",
+      "name": "React.js",
+      "level": 85,
+      "category": "Frontend"
+    },
+    {
+      "id": "3",
+      "name": "Node.js",
+      "level": 80,
+      "category": "Backend"
+    },
+    {
+      "id": "5",
+      "name": "CSS/SASS",
+      "level": 88,
+      "category": "Frontend"
+    },
+    {
+      "id": "6",
+      "name": "Python",
+      "level": 70,
+      "category": "Backend"
+    },
+    {
+      "id": "8",
+      "name": "UI/UX Design",
+      "level": 78,
+      "category": "Design"
+    }
+  ],
+  "projects": [],
+  "experience": [],
+  "blogs": [],
+  "education": [],
+  "messages": [],
+  "admin": {
+    "email": "admin@portfolio.com",
+    "password": "$2a$10$8Z7qKxZ5Z5Z5Z5Z5Z5Z5ZOeX9F5Z5Z5Z5Z5Z5Z5Z5Z5Z5Z5Z5Z5Z5"
+  }
+}
