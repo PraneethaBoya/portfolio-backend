@@ -4,6 +4,7 @@ const bcrypt = require('bcryptjs');
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
+const os = require('os');
 require('dotenv').config();
 
 const app = express();
@@ -12,8 +13,13 @@ const PORT = process.env.PORT || 3000;
 app.set('trust proxy', 1);
 
 const ROOT_DIR = __dirname;
-const DATABASE_PATH = path.join(ROOT_DIR, 'database.json');
-const UPLOADS_DIR = path.join(ROOT_DIR, 'uploads');
+const DEFAULT_DATABASE_PATH = path.join(ROOT_DIR, 'database.json');
+const FALLBACK_DATABASE_PATH = path.join(os.tmpdir(), 'portfolio-database.json');
+let DATABASE_PATH = process.env.DATABASE_PATH ? path.resolve(process.env.DATABASE_PATH) : DEFAULT_DATABASE_PATH;
+
+const DEFAULT_UPLOADS_DIR = path.join(ROOT_DIR, 'uploads');
+const FALLBACK_UPLOADS_DIR = path.join(os.tmpdir(), 'portfolio-uploads');
+let UPLOADS_DIR = process.env.UPLOADS_DIR ? path.resolve(process.env.UPLOADS_DIR) : DEFAULT_UPLOADS_DIR;
 
 const corsOrigins = (process.env.CORS_ORIGINS || '')
     .split(',')
@@ -115,10 +121,22 @@ const contactLimiter = createRateLimiter({ windowMs: 60 * 1000, max: 10 });
 
 const storage = multer.diskStorage({
     destination: (req, file, cb) => {
-        if (!fs.existsSync(UPLOADS_DIR)) {
-            fs.mkdirSync(UPLOADS_DIR, { recursive: true });
+        try {
+            if (!fs.existsSync(UPLOADS_DIR)) {
+                fs.mkdirSync(UPLOADS_DIR, { recursive: true });
+            }
+            cb(null, UPLOADS_DIR);
+        } catch (err) {
+            try {
+                UPLOADS_DIR = FALLBACK_UPLOADS_DIR;
+                if (!fs.existsSync(UPLOADS_DIR)) {
+                    fs.mkdirSync(UPLOADS_DIR, { recursive: true });
+                }
+                cb(null, UPLOADS_DIR);
+            } catch (fallbackErr) {
+                cb(fallbackErr);
+            }
         }
-        cb(null, UPLOADS_DIR);
     },
     filename: (req, file, cb) => {
         cb(null, sanitizeUploadedFilename(file.originalname));
@@ -176,6 +194,24 @@ function readDatabase() {
         const data = fs.readFileSync(DATABASE_PATH, 'utf8');
         return JSON.parse(data);
     } catch (error) {
+        try {
+            if (DATABASE_PATH !== FALLBACK_DATABASE_PATH) {
+                const data = fs.readFileSync(FALLBACK_DATABASE_PATH, 'utf8');
+                DATABASE_PATH = FALLBACK_DATABASE_PATH;
+                return JSON.parse(data);
+            }
+        } catch (_) {}
+
+        try {
+            const seeded = fs.readFileSync(DEFAULT_DATABASE_PATH, 'utf8');
+            const parsed = JSON.parse(seeded);
+            try {
+                fs.writeFileSync(FALLBACK_DATABASE_PATH, JSON.stringify(parsed, null, 2));
+                DATABASE_PATH = FALLBACK_DATABASE_PATH;
+            } catch (_) {}
+            return parsed;
+        } catch (_) {}
+
         console.error('Error reading database:', error);
         return null;
     }
@@ -186,8 +222,15 @@ function writeDatabase(data) {
         fs.writeFileSync(DATABASE_PATH, JSON.stringify(data, null, 2));
         return true;
     } catch (error) {
-        console.error('Error writing database:', error);
-        return false;
+        try {
+            DATABASE_PATH = FALLBACK_DATABASE_PATH;
+            fs.writeFileSync(DATABASE_PATH, JSON.stringify(data, null, 2));
+            return true;
+        } catch (fallbackErr) {
+            console.error('Error writing database:', error);
+            console.error('Fallback database write failed:', fallbackErr);
+            return false;
+        }
     }
 }
 
