@@ -44,6 +44,10 @@ app.use((req, res, next) => {
 app.use(express.json({ limit: '200kb' }));
 app.use(express.urlencoded({ extended: true, limit: '200kb' }));
 
+const cookieSameSite = (process.env.COOKIE_SAMESITE || (process.env.NODE_ENV === 'production' ? 'none' : 'lax')).toLowerCase();
+let cookieSecure = process.env.COOKIE_SECURE === 'true' || process.env.NODE_ENV === 'production';
+if (cookieSameSite === 'none') cookieSecure = true;
+
 app.use(session({
     secret: process.env.SESSION_SECRET,
     resave: false,
@@ -51,8 +55,8 @@ app.use(session({
     cookie: {
         maxAge: 24 * 60 * 60 * 1000,
         httpOnly: true,
-        sameSite: process.env.COOKIE_SAMESITE || 'lax',
-        secure: process.env.COOKIE_SECURE === 'true' || process.env.NODE_ENV === 'production'
+        sameSite: cookieSameSite,
+        secure: cookieSecure
     }
 }));
 
