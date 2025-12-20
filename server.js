@@ -5,6 +5,8 @@ const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
+const { Readable } = require('stream');
+const { GridFSBucket, ObjectId } = require('mongodb');
 const mongoose = require('mongoose');
 const MongoStore = require('connect-mongo');
 require('dotenv').config();
@@ -22,6 +24,8 @@ let DATABASE_PATH = process.env.DATABASE_PATH ? path.resolve(process.env.DATABAS
 const MONGODB_URI = process.env.MONGODB_URI;
 console.log('MONGODB_URI configured:', !!MONGODB_URI);
 console.log('Session store:', MONGODB_URI ? 'MongoStore' : 'MemoryStore');
+
+const USE_GRIDFS_UPLOADS = !!MONGODB_URI;
 
 const DEFAULT_UPLOADS_DIR = path.join(ROOT_DIR, 'uploads');
 const FALLBACK_UPLOADS_DIR = path.join(os.tmpdir(), 'portfolio-uploads');
@@ -54,8 +58,12 @@ const cookieSameSite = (process.env.COOKIE_SAMESITE || (process.env.NODE_ENV ===
 let cookieSecure = process.env.COOKIE_SECURE === 'true' || process.env.NODE_ENV === 'production';
 if (cookieSameSite === 'none') cookieSecure = true;
 
+const SESSION_SECRET = (process.env.SESSION_SECRET && process.env.SESSION_SECRET.trim())
+    ? process.env.SESSION_SECRET
+    : 'dev-session-secret';
+
 app.use(session({
-    secret: process.env.SESSION_SECRET,
+    secret: SESSION_SECRET,
     resave: false,
     saveUninitialized: false,
     store: MONGODB_URI ? MongoStore.create({
@@ -78,6 +86,68 @@ app.get('/', (req, res) => {
 const uploadsStaticDirs = Array.from(new Set([UPLOADS_DIR, DEFAULT_UPLOADS_DIR, FALLBACK_UPLOADS_DIR].filter(Boolean)));
 uploadsStaticDirs.forEach((dir) => {
     app.use('/uploads', express.static(dir));
+});
+
+async function getUploadsBucket() {
+    if (!USE_GRIDFS_UPLOADS) return null;
+    await ensureMongoConnected();
+    return new GridFSBucket(mongoose.connection.db, { bucketName: 'portfolio_uploads' });
+}
+
+function isObjectIdString(value) {
+    return typeof value === 'string' && /^[a-f0-9]{24}$/i.test(value.trim());
+}
+
+function extractUploadsId(value) {
+    if (!isNonEmptyString(value)) return '';
+    const trimmed = value.trim();
+    const prefix = '/uploads/';
+    const raw = trimmed.startsWith(prefix) ? trimmed.slice(prefix.length) : trimmed;
+    const id = raw.split('?')[0].split('#')[0];
+    return isObjectIdString(id) ? id : '';
+}
+
+async function uploadBufferToGridFs({ buffer, filename, contentType, metadata }) {
+    const bucket = await getUploadsBucket();
+    if (!bucket) return null;
+
+    const safeFilename = sanitizeUploadedFilename(filename || 'file');
+    const uploadStream = bucket.openUploadStream(safeFilename, {
+        contentType: isNonEmptyString(contentType) ? contentType : undefined,
+        metadata: metadata && typeof metadata === 'object' ? metadata : undefined
+    });
+
+    const id = uploadStream.id;
+    await new Promise((resolve, reject) => {
+        Readable.from(buffer).pipe(uploadStream);
+        uploadStream.on('finish', resolve);
+        uploadStream.on('error', reject);
+    });
+
+    return id;
+}
+
+app.get('/uploads/:id', async (req, res, next) => {
+    if (!USE_GRIDFS_UPLOADS) return next();
+    const raw = (req.params && req.params.id) ? req.params.id : '';
+    if (!isObjectIdString(raw)) return next();
+
+    try {
+        const bucket = await getUploadsBucket();
+        if (!bucket) return next();
+
+        const oid = new ObjectId(raw);
+        const files = await bucket.find({ _id: oid }).toArray();
+        if (!files || files.length === 0) return res.sendStatus(404);
+        const file = files[0];
+        if (file && file.contentType) res.setHeader('Content-Type', file.contentType);
+
+        bucket.openDownloadStream(oid)
+            .on('error', () => res.sendStatus(404))
+            .pipe(res);
+    } catch (err) {
+        return next(err);
+    }
 });
 
 const portfolioSchema = new mongoose.Schema({
@@ -212,13 +282,13 @@ const resumeFileFilter = (req, file, cb) => {
 };
 
 const uploadImage = multer({
-    storage,
+    storage: USE_GRIDFS_UPLOADS ? multer.memoryStorage() : storage,
     fileFilter: imageFileFilter,
     limits: { fileSize: 5 * 1024 * 1024 }
 });
 
 const uploadResume = multer({
-    storage,
+    storage: USE_GRIDFS_UPLOADS ? multer.memoryStorage() : storage,
     fileFilter: resumeFileFilter,
     limits: { fileSize: 10 * 1024 * 1024 }
 });
@@ -464,7 +534,26 @@ app.post('/api/profile/image', isAuthenticated, uploadImage.single('image'), (re
     if (req.file) {
         return (async () => {
             const db = await getDb();
-            db.profile.image = '/uploads/' + req.file.filename;
+            if (USE_GRIDFS_UPLOADS && req.file.buffer) {
+                const oldId = extractUploadsId(db && db.profile ? db.profile.image : '');
+                try {
+                    if (oldId) {
+                        const bucket = await getUploadsBucket();
+                        if (bucket) await bucket.delete(new ObjectId(oldId));
+                    }
+                } catch (_) {}
+
+                const id = await uploadBufferToGridFs({
+                    buffer: req.file.buffer,
+                    filename: req.file.originalname,
+                    contentType: req.file.mimetype,
+                    metadata: { kind: 'profile_image' }
+                });
+                if (!id) return res.status(500).json({ error: 'Failed to store image' });
+                db.profile.image = '/uploads/' + id.toString();
+            } else {
+                db.profile.image = '/uploads/' + req.file.filename;
+            }
             if (await saveDb(db)) {
                 return res.json({ success: true, imagePath: db.profile.image });
             }
@@ -479,7 +568,26 @@ app.post('/api/profile/resume', isAuthenticated, uploadResume.single('resume'), 
     if (req.file) {
         return (async () => {
             const db = await getDb();
-            db.profile.resume = '/uploads/' + req.file.filename;
+            if (USE_GRIDFS_UPLOADS && req.file.buffer) {
+                const oldId = extractUploadsId(db && db.profile ? db.profile.resume : '');
+                try {
+                    if (oldId) {
+                        const bucket = await getUploadsBucket();
+                        if (bucket) await bucket.delete(new ObjectId(oldId));
+                    }
+                } catch (_) {}
+
+                const id = await uploadBufferToGridFs({
+                    buffer: req.file.buffer,
+                    filename: req.file.originalname,
+                    contentType: req.file.mimetype,
+                    metadata: { kind: 'resume_pdf' }
+                });
+                if (!id) return res.status(500).json({ error: 'Failed to store resume' });
+                db.profile.resume = '/uploads/' + id.toString();
+            } else {
+                db.profile.resume = '/uploads/' + req.file.filename;
+            }
             if (await saveDb(db)) {
                 return res.json({ success: true, resumePath: db.profile.resume });
             }
@@ -494,6 +602,36 @@ app.get('/api/resume/download', async (req, res) => {
     const db = await getDb();
     if (!db || !db.profile || !db.profile.resume) {
         return res.status(404).json({ error: 'Resume not found' });
+    }
+
+    const safeName = (db.profile.name || 'resume')
+        .toString()
+        .trim()
+        .replace(/[^a-z0-9\-\_\.\s]/gi, '')
+        .replace(/\s+/g, '-')
+        .slice(0, 80) || 'file';
+
+    if (USE_GRIDFS_UPLOADS) {
+        const resumeId = extractUploadsId(db.profile.resume);
+        if (resumeId) {
+            try {
+                const bucket = await getUploadsBucket();
+                const oid = new ObjectId(resumeId);
+                const files = await bucket.find({ _id: oid }).toArray();
+                if (!files || files.length === 0) {
+                    return res.status(404).json({ error: 'Resume file not found' });
+                }
+                const file = files[0];
+                res.setHeader('Content-Disposition', `attachment; filename="${safeName}-resume.pdf"`);
+                res.setHeader('Content-Type', (file && file.contentType) ? file.contentType : 'application/pdf');
+                return bucket.openDownloadStream(oid)
+                    .on('error', () => res.status(404).json({ error: 'Resume file not found' }))
+                    .pipe(res);
+            } catch (err) {
+                console.error(err);
+                return res.status(500).json({ error: 'Could not download resume right now. Please try again.' });
+            }
+        }
     }
 
     const resumePath = db.profile.resume;
@@ -513,13 +651,6 @@ app.get('/api/resume/download', async (req, res) => {
     if (!absolute) {
         return res.status(404).json({ error: 'Resume file not found' });
     }
-
-    const safeName = (db.profile.name || 'resume')
-        .toString()
-        .trim()
-        .replace(/[^a-z0-9\-\_\.\s]/gi, '')
-        .replace(/\s+/g, '-')
-        .slice(0, 80) || 'file';
 
     return res.download(absolute, `${safeName}-resume.pdf`);
 });
@@ -584,7 +715,18 @@ app.post('/api/projects', isAuthenticated, uploadImage.single('image'), (req, re
             date: req.body.date
         };
         if (req.file) {
-            newProject.image = '/uploads/' + req.file.filename;
+            if (USE_GRIDFS_UPLOADS && req.file.buffer) {
+                const id = await uploadBufferToGridFs({
+                    buffer: req.file.buffer,
+                    filename: req.file.originalname,
+                    contentType: req.file.mimetype,
+                    metadata: { kind: 'project_image', projectId: newProject.id }
+                });
+                if (!id) return res.status(500).json({ error: 'Failed to store image' });
+                newProject.image = '/uploads/' + id.toString();
+            } else {
+                newProject.image = '/uploads/' + req.file.filename;
+            }
         }
         db.projects.push(newProject);
         if (await saveDb(db)) {
@@ -613,7 +755,26 @@ app.put('/api/projects/:id', isAuthenticated, uploadImage.single('image'), (req,
                 }
             }
             if (req.file) {
-                db.projects[index].image = '/uploads/' + req.file.filename;
+                if (USE_GRIDFS_UPLOADS && req.file.buffer) {
+                    const oldId = extractUploadsId(db.projects[index] && db.projects[index].image ? db.projects[index].image : '');
+                    try {
+                        if (oldId) {
+                            const bucket = await getUploadsBucket();
+                            if (bucket) await bucket.delete(new ObjectId(oldId));
+                        }
+                    } catch (_) {}
+
+                    const id = await uploadBufferToGridFs({
+                        buffer: req.file.buffer,
+                        filename: req.file.originalname,
+                        contentType: req.file.mimetype,
+                        metadata: { kind: 'project_image', projectId: db.projects[index].id }
+                    });
+                    if (!id) return res.status(500).json({ error: 'Failed to store image' });
+                    db.projects[index].image = '/uploads/' + id.toString();
+                } else {
+                    db.projects[index].image = '/uploads/' + req.file.filename;
+                }
             }
             if (await saveDb(db)) {
                 res.json({ success: true, data: db.projects[index] });
@@ -702,7 +863,18 @@ app.post('/api/blogs', isAuthenticated, uploadImage.single('image'), (req, res) 
             tags: parseJsonArray(req.body.tags)
         };
         if (req.file) {
-            newBlog.image = '/uploads/' + req.file.filename;
+            if (USE_GRIDFS_UPLOADS && req.file.buffer) {
+                const id = await uploadBufferToGridFs({
+                    buffer: req.file.buffer,
+                    filename: req.file.originalname,
+                    contentType: req.file.mimetype,
+                    metadata: { kind: 'blog_image', blogId: newBlog.id }
+                });
+                if (!id) return res.status(500).json({ error: 'Failed to store image' });
+                newBlog.image = '/uploads/' + id.toString();
+            } else {
+                newBlog.image = '/uploads/' + req.file.filename;
+            }
         }
         db.blogs.push(newBlog);
         if (await saveDb(db)) {
@@ -732,7 +904,26 @@ app.put('/api/blogs/:id', isAuthenticated, uploadImage.single('image'), (req, re
                 }
             }
             if (req.file) {
-                db.blogs[index].image = '/uploads/' + req.file.filename;
+                if (USE_GRIDFS_UPLOADS && req.file.buffer) {
+                    const oldId = extractUploadsId(db.blogs[index] && db.blogs[index].image ? db.blogs[index].image : '');
+                    try {
+                        if (oldId) {
+                            const bucket = await getUploadsBucket();
+                            if (bucket) await bucket.delete(new ObjectId(oldId));
+                        }
+                    } catch (_) {}
+
+                    const id = await uploadBufferToGridFs({
+                        buffer: req.file.buffer,
+                        filename: req.file.originalname,
+                        contentType: req.file.mimetype,
+                        metadata: { kind: 'blog_image', blogId: db.blogs[index].id }
+                    });
+                    if (!id) return res.status(500).json({ error: 'Failed to store image' });
+                    db.blogs[index].image = '/uploads/' + id.toString();
+                } else {
+                    db.blogs[index].image = '/uploads/' + req.file.filename;
+                }
             }
             if (await saveDb(db)) {
                 res.json({ success: true, data: db.blogs[index] });
@@ -865,6 +1056,7 @@ app.use((err, req, res, next) => {
         }
         return res.status(400).json({ error: err.message });
     }
+    console.error(err);
     const status = err.status || 500;
     return res.status(status).json({ error: status === 500 ? 'Server error' : err.message });
 });
