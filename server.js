@@ -498,9 +498,19 @@ app.get('/api/resume/download', async (req, res) => {
 
     const resumePath = db.profile.resume;
     const relative = resumePath.startsWith('/uploads/') ? resumePath.slice('/uploads/'.length) : resumePath;
-    const absolute = path.join(__dirname, 'uploads', relative);
+    const resumeFilename = path.basename(relative);
+    const candidateDirs = Array.from(new Set([UPLOADS_DIR, DEFAULT_UPLOADS_DIR, FALLBACK_UPLOADS_DIR].filter(Boolean)));
 
-    if (!fs.existsSync(absolute)) {
+    let absolute = null;
+    for (const dir of candidateDirs) {
+        const candidate = path.join(dir, resumeFilename);
+        if (fs.existsSync(candidate)) {
+            absolute = candidate;
+            break;
+        }
+    }
+
+    if (!absolute) {
         return res.status(404).json({ error: 'Resume file not found' });
     }
 
