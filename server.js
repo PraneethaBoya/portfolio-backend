@@ -562,9 +562,11 @@ app.post('/api/blogs', isAuthenticated, uploadImage.single('image'), (req, res) 
         content: req.body.content,
         excerpt: req.body.excerpt,
         date: req.body.date,
-        tags: parseJsonArray(req.body.tags),
-        image: req.file ? '/uploads/' + req.file.filename : '/uploads/blog-default.jpg'
+        tags: parseJsonArray(req.body.tags)
     };
+    if (req.file) {
+        newBlog.image = '/uploads/' + req.file.filename;
+    }
     db.blogs.push(newBlog);
     if (writeDatabase(db)) {
         res.json({ success: true, data: newBlog });
@@ -586,7 +588,9 @@ app.put('/api/blogs/:id', isAuthenticated, uploadImage.single('image'), (req, re
             tags: parseJsonArray(req.body.tags)
         };
         if (req.body && (req.body.removeImage === 'true' || req.body.removeImage === true)) {
-            db.blogs[index].image = '/uploads/blog-default.jpg';
+            if (db.blogs[index] && Object.prototype.hasOwnProperty.call(db.blogs[index], 'image')) {
+                delete db.blogs[index].image;
+            }
         }
         if (req.file) {
             db.blogs[index].image = '/uploads/' + req.file.filename;
