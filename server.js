@@ -202,6 +202,16 @@ function readDatabase() {
         return JSON.parse(data);
     } catch (error) {
         try {
+            if (DATABASE_PATH && DATABASE_PATH !== DEFAULT_DATABASE_PATH && DATABASE_PATH !== FALLBACK_DATABASE_PATH) {
+                const seeded = fs.readFileSync(DEFAULT_DATABASE_PATH, 'utf8');
+                const parsed = JSON.parse(seeded);
+                fs.mkdirSync(path.dirname(DATABASE_PATH), { recursive: true });
+                fs.writeFileSync(DATABASE_PATH, JSON.stringify(parsed, null, 2));
+                return parsed;
+            }
+        } catch (_) {}
+
+        try {
             if (DATABASE_PATH !== FALLBACK_DATABASE_PATH) {
                 const data = fs.readFileSync(FALLBACK_DATABASE_PATH, 'utf8');
                 DATABASE_PATH = FALLBACK_DATABASE_PATH;
