@@ -442,9 +442,11 @@ app.post('/api/projects', isAuthenticated, uploadImage.single('image'), (req, re
         title: req.body.title,
         description: req.body.description,
         techStack: parseJsonArray(req.body.techStack),
-        date: req.body.date,
-        image: req.file ? '/uploads/' + req.file.filename : '/uploads/project-default.jpg'
+        date: req.body.date
     };
+    if (req.file) {
+        newProject.image = '/uploads/' + req.file.filename;
+    }
     db.projects.push(newProject);
     if (writeDatabase(db)) {
         res.json({ success: true, data: newProject });
@@ -471,7 +473,9 @@ app.put('/api/projects/:id', isAuthenticated, uploadImage.single('image'), (req,
             delete db.projects[index].liveLink;
         }
         if (req.body && (req.body.removeImage === 'true' || req.body.removeImage === true)) {
-            db.projects[index].image = '/uploads/project-default.jpg';
+            if (db.projects[index] && Object.prototype.hasOwnProperty.call(db.projects[index], 'image')) {
+                delete db.projects[index].image;
+            }
         }
         if (req.file) {
             db.projects[index].image = '/uploads/' + req.file.filename;
